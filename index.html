@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TCG 大会卓管理タイマー</title>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --card-bg: #2d2d2d;
+            --text-color: #ffffff;
+            --accent-green: #28a745;
+            --accent-red: #dc3545;
+            --accent-yellow: #ffc107;
+            --accent-blue: #007bff;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        /* ヘッダーエリア（操作パネル） */
+        header {
+            background-color: #000;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.2rem;
+        }
+
+        .control-panel {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        .btn-mode-match {
+            background-color: var(--accent-blue);
+            color: white;
+        }
+
+        .btn-mode-ext {
+            background-color: var(--accent-red);
+            color: white;
+        }
+
+        .btn-reset {
+            background-color: #666;
+            color: white;
+        }
+
+        /* メイングリッドエリア */
+        main {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            display: grid;
+            /* 画面幅に合わせて自動で列数を調整（最小100px幅） */
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 8px;
+        }
+
+        /* 卓カードのデザイン */
+        .table-card {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            user-select: none;
+            border: 2px solid transparent;
+            height: 80px;
+            position: relative;
+        }
+
+        .table-id {
+            font-size: 0.9rem;
+            color: #888;
+            position: absolute;
+            top: 5px;
+            left: 8px;
+        }
+
+        .timer-display {
+            font-size: 1.8rem;
+            font-family: 'Courier New', Courier, monospace;
+            font-weight: bold;
+        }
+
+        /* 状態ごとの色変化 */
+
+        /* 計測中 (Active) */
+        .table-card.active {
+            background-color: #1e3a23;
+            border-color: var(--accent-green);
+        }
+
+        .table-card.active .timer-display {
+            color: var(--accent-green);
+        }
+
+        /* 停止中だが時間がある (Paused) */
+        .table-card.has-time {
+            background-color: #3a3418;
+            border-color: var(--accent-yellow);
+        }
+
+        /* 延長戦モード中 */
+        body.extension-mode .table-card.active {
+            background-color: #3a1e1e;
+            border-color: var(--accent-red);
+        }
+
+        body.extension-mode .table-card.active .timer-display {
+            color: var(--accent-red);
+        }
+
+        /* 延長時間切れ (Time Up) */
+        .table-card.time-up {
+            background-color: var(--accent-red);
+            color: white;
+            animation: flash 1s infinite;
+        }
+
+        .table-card.time-up .table-id,
+        .table-card.time-up .timer-display {
+            color: white;
+        }
+
+        /* モード表示 */
+        .status-bar {
+            text-align: center;
+            padding: 5px;
+            background: #333;
+            font-size: 0.8rem;
+        }
+
+        @keyframes flash {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>大会卓管理 (64卓)</h1>
+        <div class="control-panel">
+            <button id="btnToggleMode" class="btn-mode-ext" onclick="toggleExtensionMode()">延長開始</button>
+        </div>
+    </header>
+
+    <div class="status-bar" id="statusBar">現在のモード：【通常対戦】 タップでロスタイム計測</div>
+
+    <main id="gridContainer">
+    </main>
+
+    <script>
+        // --- 設定 ---
+        const TABLE_COUNT = 64;
+        let isExtensionMode = false; // false=通常(加算), true=延長(減算)
+
+        // 卓データ管理用配列
+        // { id: 1, timeMs: 0, isRunning: false, lastTick: 0 }
+        let tables = [];
+
+        // --- 初期化 ---
+        function init() {
+            const grid = document.getElementById('gridContainer');
+            grid.innerHTML = '';
+
+            for (let i = 1; i <= TABLE_COUNT; i++) {
+                // データ作成
+                tables.push({
+                    id: i,
+                    timeMs: 0,        // ミリ秒単位で保持
+                    isRunning: false, // 計測中かどうか
+                    lastTick: null    // 最後に計算した時刻
+                });
+
+                // HTML要素作成
+                const card = document.createElement('div');
+                card.className = 'table-card';
+                card.id = `table-${i}`;
+                card.onclick = () => toggleTable(i);
+
+                card.innerHTML = `
+                    <span class="table-id">No.${i}</span>
+                    <span class="timer-display" id="timer-${i}">00:00</span>
+                `;
+                grid.appendChild(card);
+            }
+
+            // メインループ開始 (100msごとに画面更新)
+            requestAnimationFrame(mainLoop);
+        }
+
+        // --- 卓をクリックした時の動作 ---
+        function toggleTable(id) {
+            const index = id - 1;
+            const table = tables[index];
+
+            if (isExtensionMode) {
+                // 延長モード中は手動での停止/再開は基本的にロック（必要なら変更可）
+                // ここでは「延長中も一時停止可能」にする場合
+                if (table.timeMs > 0) {
+                    table.isRunning = !table.isRunning;
+                    if (table.isRunning) {
+                        table.lastTick = Date.now();
+                    }
+                }
+            } else {
+                // 通常モード：ストップウォッチのON/OFF
+                table.isRunning = !table.isRunning;
+                if (table.isRunning) {
+                    table.lastTick = Date.now(); // 開始時刻を記録
+                }
+            }
+            updateUI(index);
+        }
+
+        // --- 延長モード切替ボタン ---
+        function toggleExtensionMode() {
+            const btn = document.getElementById('btnToggleMode');
+            const bar = document.getElementById('statusBar');
+
+            if (!isExtensionMode) {
+                // 延長開始！
+                if (!confirm("全卓の計測を止め、延長モード（減算）を開始しますか？\n※ロスタイムが発生している卓が一斉に動き出します。")) return;
+
+                isExtensionMode = true;
+                document.body.classList.add('extension-mode');
+                btn.innerText = "リセット(F5)";
+                btn.className = "btn-reset"; // ボタンの色を変える
+                btn.onclick = () => location.reload(); // リセットボタン化
+                bar.innerText = "現在のモード：【延長戦】 残り時間カウントダウン中...";
+
+                // 全卓の状態を変更
+                tables.forEach(t => {
+                    if (t.timeMs > 0) {
+                        // ロスタイムがある卓は自動で減算開始
+                        t.isRunning = true;
+                        t.lastTick = Date.now();
+                    } else {
+                        // ロスタイムがない卓は停止
+                        t.isRunning = false;
+                    }
+                });
+
+            } else {
+                // 延長モード終了（このコードではリロードでリセットとしました）
+                location.reload();
+            }
+        }
+
+        // --- 時間計算とループ ---
+        function mainLoop() {
+            const now = Date.now();
+
+            tables.forEach((table, index) => {
+                if (table.isRunning) {
+                    const delta = now - table.lastTick;
+
+                    if (isExtensionMode) {
+                        // 延長モード：減算
+                        table.timeMs -= delta;
+                        if (table.timeMs <= 0) {
+                            table.timeMs = 0;
+                            table.isRunning = false; // 時間切れで停止
+                        }
+                    } else {
+                        // 通常モード：加算
+                        table.timeMs += delta;
+                    }
+
+                    table.lastTick = now;
+                    updateUI(index);
+                }
+            });
+
+            requestAnimationFrame(mainLoop);
+        }
+
+        // --- 画面更新 ---
+        function updateUI(index) {
+            const table = tables[index];
+            const card = document.getElementById(`table-${table.id}`);
+            const timerDisplay = document.getElementById(`timer-${table.id}`);
+
+            // タイマー表示形式 MM:SS
+            const totalSeconds = Math.ceil(table.timeMs / 1000);
+            const mm = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+            const ss = String(totalSeconds % 60).padStart(2, '0');
+            timerDisplay.innerText = `${mm}:${ss}`;
+
+            // クラスの付け替え（見た目の制御）
+            card.className = 'table-card'; // リセット
+
+            if (isExtensionMode && table.timeMs === 0 && table.lastTick !== null) {
+                // 延長モードで時間が0になった（使い切った）かつ、一度でも動いたことがある
+                // ※初期状態の0秒卓と区別するため簡易判定
+                if (mm === "00" && ss === "00" && isExtensionMode) {
+                    // もともと時間がなかった卓は何もしない
+                }
+            }
+
+            // 状態ごとのスタイル適用
+            if (isExtensionMode) {
+                if (table.timeMs <= 0 && table.lastTick) {
+                    // 延長時間があり、それを使い切った場合（判定を少し厳密にするには工夫が必要だが簡易実装）
+                    // ここでは「延長モード突入時に時間が0だった」卓を除外したいが、
+                    // シンプルに「延長モードで0秒になったら赤」とする
+                    // ただし初期値0の卓はずっと赤になってしまうので、
+                    // 「延長開始時に0秒だった卓」はisRunningにしていないので除外できる。
+                    // isRunningがfalseになった = 使い切った
+                }
+            }
+
+            if (table.isRunning) {
+                card.classList.add('active');
+            } else if (table.timeMs > 0) {
+                if (isExtensionMode && table.timeMs <= 100) { // ほぼ0
+                    card.classList.add('time-up');
+                    timerDisplay.innerText = "TIME UP";
+                } else {
+                    card.classList.add('has-time');
+                }
+            }
+        }
+
+        // 実行
+        init();
+
+    </script>
+</body>
+
+</html>
